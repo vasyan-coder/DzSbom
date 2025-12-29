@@ -1,0 +1,95 @@
+stages:
+  - build
+  - security
+
+workflow:
+  rules:
+    # Запускать пайплайн только для merge request events (создание/обновление MR)
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+generate_sbom:
+  stage: build
+  image: python:3.11-slim
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  script:
+    - python -m pip install --upgrade pip
+    - pip install poetry==1.8.5 cyclonedx-bom
+    - poetry lock --no-interaction
+    - poetry install --no-interaction
+    - mkdir -p artifacts
+    # Полный SBOM (runtime + dev)
+    - cyclonedx-py poetry --output-format JSON --spec-version 1.6 --output-file artifacts/sbom.cdx.full.json
+    # Runtime-only SBOM (без dev)
+    - cyclonedx-py poetry --no-dev --output-format JSON --spec-version 1.6 --output-file artifacts/sbom.cdx.runtime.json
+  artifacts:
+    when: always
+    paths:
+      - artifacts/
+    expire_in: 1 week
+
+dependency_check:
+  stage: security
+  image: eclipse-temurin:17-jre
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  cache:
+    key: dependency-check
+    paths:
+      - .dependency-check-data/
+  script:
+    - apt-get update && apt-get install -y --no-install-recommends curl unzip ca-certificates && rm -rf /var/lib/apt/lists/*
+    - mkdir -p tools artifacts .dependency-check-data
+    # Скачать Dependency-Check CLI (версию можно обновлять по необходимости)
+    - curl -sSLo tools/dependency-check.zip https://github.com/jeremylong/DependencyCheck/releases/download/v12.1.0/dependency-check-12.1.0-release.zip
+    - unzip -q tools/dependency-check.zip -d tools/
+    - chmod +x tools/dependency-check/bin/dependency-check.sh
+    # Запустить скан
+    - tools/dependency-check/bin/dependency-check.sh \
+        --project "sbom-python-demo" \
+        --scan "$CI_PROJECT_DIR" \
+        --out "$CI_PROJECT_DIR/artifacts" \
+        --format "ALL" \
+        --enableExperimental \
+        --data "$CI_PROJECT_DIR/.dependency-check-data" \
+        ${NVD_API_KEY:+--nvdApiKey "$NVD_API_KEY"}
+  artifacts:
+    when: always
+    paths:
+      - artifacts/
+    expire_in: 1 week
+
+upload_dependency_track:
+  stage: security
+  image: curlimages/curl:8.5.0
+  needs: ["generate_sbom"]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  script:
+    - chmod +x ci/upload_to_dependency_track.sh
+    - ./ci/upload_to_dependency_track.sh artifacts/sbom.cdx.full.json
+  artifacts:
+    when: always
+    paths:
+      - artifacts/
+    expire_in: 1 week
+
+export_dependency_track_findings:
+  stage: security
+  image: curlimages/curl:8.5.0
+  needs: ["upload_dependency_track"]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  script:
+    - chmod +x ci/export_dependency_track_findings.sh
+    # Небольшая пауза, чтобы DT успел обработать BOM (в реальности лучше polling по BOM token)
+    - sleep 20
+    - ./ci/export_dependency_track_findings.sh artifacts/dependency-track-findings.fpf.json
+  artifacts:
+    when: always
+    paths:
+      - artifacts/
+    expire_in: 1 week
