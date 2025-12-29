@@ -1,23 +1,14 @@
-#!/usr/bin/env sh
-set -eu
 
-: "${DEPENDENCY_TRACK_URL:?Need DEPENDENCY_TRACK_URL}"
-: "${DEPENDENCY_TRACK_API_KEY:?Need DEPENDENCY_TRACK_API_KEY}"
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Option A: upload to an existing project
-# : "${DEPENDENCY_TRACK_PROJECT_UUID:?Need DEPENDENCY_TRACK_PROJECT_UUID}"
+BOM_PATH="${1:?Usage: $0 <path-to-bom.json>}"
 
-SBOM_FILE="${1:-artifacts/sbom.cdx.json}"
+: "${DT_URL:?DT_URL is required (e.g. http://host:8081)}"
+: "${DT_API_KEY:?DT_API_KEY is required}"
+: "${DT_PROJECT_UUID:?DT_PROJECT_UUID is required}"
 
-# Option B (recommended for CI): autoCreate a project by name+version
-PROJECT_NAME="${DEPENDENCY_TRACK_PROJECT_NAME:-sbom-python-demo}"
-PROJECT_VERSION="${DEPENDENCY_TRACK_PROJECT_VERSION:-0.1.0}"
-
-curl -sS -X POST "${DEPENDENCY_TRACK_URL%/}/api/v1/bom" \
-  -H "X-Api-Key: ${DEPENDENCY_TRACK_API_KEY}" \
-  -F "autoCreate=true" \
-  -F "projectName=${PROJECT_NAME}" \
-  -F "projectVersion=${PROJECT_VERSION}" \
-  -F "bom=@${SBOM_FILE}"
-
-echo "Uploaded SBOM to Dependency-Track: ${PROJECT_NAME}@${PROJECT_VERSION}"
+curl -sS -f -X POST "$DT_URL/api/v1/bom" \
+  -H "X-Api-Key: $DT_API_KEY" \
+  -F "project=$DT_PROJECT_UUID" \
+  -F "bom=@${BOM_PATH}"

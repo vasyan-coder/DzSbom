@@ -1,0 +1,132 @@
+
+name: SBOM + SCA (PR)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  generate_sbom:
+    name: build / generate SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Poetry + CycloneDX
+        run: |
+          python -m pip install --upgrade pip
+          pip install "poetry==1.8.5" cyclonedx-bom
+
+      - name: Install deps
+        run: |
+          poetry lock --no-interaction
+          poetry install --no-interaction
+
+      - name: Generate SBOMs (CycloneDX)
+        run: |
+          mkdir -p artifacts
+          cyclonedx-py poetry --output-format JSON --spec-version 1.6 --output-file artifacts/sbom.cdx.full.json
+          cyclonedx-py poetry --no-dev --output-format JSON --spec-version 1.6 --output-file artifacts/sbom.cdx.runtime.json
+          ls -lh artifacts
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: artifacts/sbom.cdx.*.json
+          retention-days: 7
+
+  security:
+    name: security / dependency-check + dependency-track
+    runs-on: ubuntu-latest
+    needs: [generate_sbom]
+    env:
+      # Secrets (задай их в GitHub -> Settings -> Secrets and variables -> Actions)
+      NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+      DT_URL: ${{ secrets.DT_URL }}
+      DT_API_KEY: ${{ secrets.DT_API_KEY }}
+      DT_PROJECT_UUID: ${{ secrets.DT_PROJECT_UUID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download SBOM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom
+          path: artifacts
+
+      - name: Setup Java (for Dependency-Check)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Cache Dependency-Check data
+        uses: actions/cache@v4
+        with:
+          path: .dependency-check-data
+          key: dependency-check-${{ runner.os }}-v12.1.0
+          restore-keys: |
+            dependency-check-${{ runner.os }}-
+
+      - name: Install OS tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl unzip ca-certificates
+          sudo rm -rf /var/lib/apt/lists/*
+
+      - name: Run OWASP Dependency-Check
+        run: |
+          mkdir -p reports/dependency-check artifacts tools .dependency-check-data
+          curl -sSLo tools/dependency-check.zip https://github.com/jeremylong/DependencyCheck/releases/download/v12.1.0/dependency-check-12.1.0-release.zip
+          unzip -q tools/dependency-check.zip -d tools/
+          chmod +x tools/dependency-check/bin/dependency-check.sh
+          tools/dependency-check/bin/dependency-check.sh \
+            --project "sbom-python-demo" \
+            --scan "$GITHUB_WORKSPACE" \
+            --out "$GITHUB_WORKSPACE/reports/dependency-check" \
+            --format "ALL" \
+            --enableExperimental \
+            --data "$GITHUB_WORKSPACE/.dependency-check-data" \
+            ${NVD_API_KEY:+--nvdApiKey "$NVD_API_KEY"}
+
+      - name: Upload Dependency-Check reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: reports/dependency-check/
+          retention-days: 7
+
+      # ---- Dependency-Track (опционально, если секреты заданы и DT доступен из GitHub runner)
+      - name: Upload BOM to Dependency-Track
+        if: ${{ env.DT_URL != '' && env.DT_API_KEY != '' && env.DT_PROJECT_UUID != '' }}
+        run: |
+          ./ci/upload_to_dependency_track.sh artifacts/sbom.cdx.full.json
+
+      - name: Export Dependency-Track findings (FPF)
+        if: ${{ env.DT_URL != '' && env.DT_API_KEY != '' && env.DT_PROJECT_UUID != '' }}
+        run: |
+          mkdir -p artifacts
+          sleep 20
+          ./ci/export_dependency_track_findings.sh artifacts/dependency-track-findings.fpf.json
+          ls -lh artifacts/dependency-track-findings.fpf.json
+          cat artifacts/dependency-track-findings.fpf.json || true
+
+      - name: Upload Dependency-Track findings
+        if: ${{ env.DT_URL != '' && env.DT_API_KEY != '' && env.DT_PROJECT_UUID != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-track-findings
+          path: artifacts/dependency-track-findings.fpf.json
+          retention-days: 7

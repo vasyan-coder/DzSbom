@@ -1,15 +1,14 @@
-#!/usr/bin/env sh
-set -eu
 
-: "${DEPENDENCY_TRACK_URL:?Need DEPENDENCY_TRACK_URL}"
-: "${DEPENDENCY_TRACK_API_KEY:?Need DEPENDENCY_TRACK_API_KEY}"
-: "${DEPENDENCY_TRACK_PROJECT_UUID:?Need DEPENDENCY_TRACK_PROJECT_UUID}"
+#!/usr/bin/env bash
+set -euo pipefail
 
-OUT_FILE="${1:-artifacts/dependency-track-findings.fpf.json}"
+OUT_PATH="${1:?Usage: $0 <output-file.json>}"
 
-curl -sS -X GET "${DEPENDENCY_TRACK_URL%/}/api/v1/finding/project/${DEPENDENCY_TRACK_PROJECT_UUID}/export" \
-  -H "X-Api-Key: ${DEPENDENCY_TRACK_API_KEY}" \
-  -H "Accept: application/json" \
-  -o "${OUT_FILE}"
+: "${DT_URL:?DT_URL is required (e.g. http://host:8081)}"
+: "${DT_API_KEY:?DT_API_KEY is required}"
+: "${DT_PROJECT_UUID:?DT_PROJECT_UUID is required}"
 
-echo "Exported Dependency-Track findings to ${OUT_FILE}"
+curl -sS -f \
+  -H "X-Api-Key: $DT_API_KEY" \
+  -o "$OUT_PATH" \
+  "$DT_URL/api/v1/finding/project/$DT_PROJECT_UUID/export"
